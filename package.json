@@ -1,0 +1,19 @@
+{
+  "name": "snowball",
+  "version": "1.0.0",
+  "description": "implementaion of the snowball consensus protocol",
+  "main": "index.js",
+  "scripts": {
+    "test": "standard && mocha"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ULCproject/ulc-snowball-consensus.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ULCproject/ulc-snowball-consensus/issues"
+  },
+  "homepage": "https://github.com/ULCproject/ulc-snowball-consensus#readme"
+}
