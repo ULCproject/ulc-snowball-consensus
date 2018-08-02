@@ -1,0 +1,13 @@
+logs
+temp
+coverage
+node_modules
+.nyc_output
+.DS_Store
+.idea
+.project
+*.seed
+*.log
+*.dat
+*.out
+*.pid

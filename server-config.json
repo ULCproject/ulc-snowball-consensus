@@ -1,0 +1,14 @@
+{
+  "ip": "127.0.0.1",
+  "port": 3334,
+  "logPath": ".",
+  "H": 3,
+  "V": 3,
+  "T": 3,
+  "supermajority": 0.6,
+  "seedNode": "127.0.0.1:3334",
+  "X": 3,
+  "logLevel": "debug",
+  "logTime": true,
+  "logRequests": true
+}
