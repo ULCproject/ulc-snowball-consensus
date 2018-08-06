@@ -1,0 +1,577 @@
+<html>
+ <head>
+<!--
+a node starts out initially in an uncolored state.
+on transaction an uncolored node updates its color to the transaction color and initiates a query.
+To perform a query, a node picks a small, constant sized (L) sample of the network
+uniformly at random, and sends a query message. Upon receiving a query,
+an uncolored node adopts the color in the query, responds with that color,
+and initiates its own query, whereas a colored node simply responds with its current color.
+Each node maintains a counter cnt;
+Upon every color change, the node resets cnt to 0;
+Upon every successful query, the node increments its confidence counter for that color.
+A node switches colors when the confidence in its current color becomes lower than the confidence value of the new color.
+It then goes back to the query step, and initiates a subsequent round of query, for a total of m rounds.
+Finally, the node decides the color it ended up with at time m.
+-->
+
+  <script type="application/javascript">
+
+    Object.clone = function(thisobj) {
+      var i;
+      var newObj = (thisobj instanceof Array) ? [] : {};
+      for (i in thisobj) {
+        if (thisobj[i] && typeof thisobj[i] == "object") {
+          newObj[i] = clone(thisobj[i]);
+        } else newObj[i] = thisobj[i]
+      } return newObj;
+    };
+
+    function mousePos(event){
+      var totalOffsetX = 0;
+      var totalOffsetY = 0;
+      var canvasX = 0;
+      var canvasY = 0;
+      var currentElement = this;
+
+      do{
+        totalOffsetX += currentElement.offsetLeft;
+        totalOffsetY += currentElement.offsetTop;
+      }
+      while(currentElement = currentElement.offsetParent)
+
+      canvasX = event.clientX + document.body.scrollLeft - totalOffsetX;
+      canvasY = event.clientY + document.body.scrollTop - totalOffsetY;
+
+      return {x:canvasX, y:canvasY}
+    }
+
+    HTMLCanvasElement.prototype.mousePos = mousePos;
+
+    var H = 0;
+    var W = 0;
+    var N = 0;
+    var L = 0; // number of nodes to query on transaction received, 'n' in the whitepaper
+    var R = 0; // number of rounds, 'm' in the whitepaper
+    var CrossTime = 0;
+    var S;
+    var Tt = 'red';
+    var Nodes = [];
+    var SimOn = 0;
+    var SimTicks = 0;
+    var SimMess= 0;
+    var SimI = 0;
+
+    function getEl(s){
+      return document.getElementById(s);
+    }
+
+    function rand(lo, hi){
+      var d = hi - lo;
+      return(lo + Math.floor(Math.random()*d));
+    }
+
+    function init(){
+      H = 600; W = 600;
+      var canvas = document.getElementById("canvas");
+      canvas.onclick = addTrans;
+    }
+
+    function nodeAddTrans(i, tt){
+      Nodes[i].in[0] = tt;
+    }
+
+    function makeNet(){
+      var i, l, tries, found, j, x;
+      N = getEl('N').value;
+      L = getEl('L').value;
+      R = getEl('R').value;
+      CrossTime = Math.sqrt(W*W + H*H);
+// make the nodes
+      Nodes = [];
+      for(i=0;i<N;i++){
+        var node = {};
+// initilize the node data
+        node.x = rand(10, W-10);
+        node.y = rand(10, H-10);
+        node.responses = []; // {<peerIndex>: <color>}
+        node.counter = {}; // {<color>: <number>}
+        node.in = []; // queue of messages coming in
+        node.out = []; // queue of messages going out
+        node.seen = {};  // keep track of trans we have seen
+        node.psup = {};  // keep track of trans our peers are supporting
+        node.support = '';  // keep track of trans we are supporting
+        node.commit = '';  // keep track of trans we commit to
+        node.supch = 0; // keep track of how long it has been since any peer changed support
+        node.mysupch = 0; // keep track of how long it has been since we changed support
+        node.bad = ''; // mark if the node is bad or not
+        Nodes[i] = node;
+      }
+    }
+
+    function fillCir(ctx, x, y, r){
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, 2*Math.PI, true);
+      ctx.fill();
+    }
+
+    function strokeCir(ctx, x, y, r){
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, 2*Math.PI, true);
+      ctx.stroke();
+    }
+
+    function strokeLine(ctx, x, y, ex, ey){
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+    }
+
+    function draw() {
+      var r, canvas, ctx, i, node, x, peeri, peer, j, m, pi, d, mx, my, t, tx, tt, col;
+      r = 5;
+      canvas = document.getElementById("canvas");
+      if (! canvas.getContext) {
+        return;
+      }
+      ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, W, H);
+// show the nodes and links
+      ctx.fillStyle = "rgb(0,0,0)";
+      for(i=0;i<Nodes.length;i++){
+        node = Nodes[i];
+        ctx.strokeStyle = "rgb(0,0,0)";
+        strokeCir(ctx, node.x, node.y, r);
+      }
+      ctx.strokeStyle = "rgb(0,0,0)";
+// mark the bad nodes
+      for(i=0;i<Nodes.length;i++){
+        node = Nodes[i];
+        if (node.bad == ''){ continue; }
+        if (node.bad == 'off'){ ctx.strokeStyle = "rgb(0,0,250)"; }
+        if (node.bad == 'stuck'){ ctx.strokeStyle = "rgb(0,250,0)"; }
+        if (node.bad == 'toggle'){ ctx.strokeStyle = "rgb(250,0,0)"; }
+        strokeCir(ctx, node.x, node.y, r+1);
+        strokeCir(ctx, node.x, node.y, r+2);
+      }
+// show which transaction the nodes are supporting
+      for(i=0;i<Nodes.length;i++){
+        node = Nodes[i];
+        if (node.support != ''){
+          if (node.support == 'red'){
+            ctx.fillStyle = "rgba(200, 0, 0, 0.5)";
+          }
+          if (node.support == 'blue'){
+            ctx.fillStyle = "rgba(0, 0, 200, 0.5)";
+          }
+          if (node.support == 'green'){
+            ctx.fillStyle = "rgba(0, 200, 0, 0.5)";
+          }
+          if (node.support == 'yellow'){
+            ctx.fillStyle = "rgba(200, 200, 0, 0.5)";
+          }
+          if (node.support == 'cyan'){
+            ctx.fillStyle = "rgba(0, 200, 200, 0.5)";
+          }
+          if (node.support == 'magenta'){
+            ctx.fillStyle = "rgba(200, 0, 200, 0.5)";
+          }
+          fillCir(ctx, node.x, node.y, r);
+        }
+      }
+// show which transaction the nodes have commited to
+      for(i=0;i<Nodes.length;i++){
+        node = Nodes[i];
+        if (node.commit != ''){
+          if (node.commit == 'red'){
+            ctx.fillStyle = "rgba(200, 0, 0, 0.99)";
+          }
+          if (node.commit == 'blue'){
+            ctx.fillStyle = "rgba(0, 0, 200, 0.99)";
+          }
+          if (node.commit == 'green'){
+            ctx.fillStyle = "rgba(0, 200, 0, 0.99)";
+          }
+          if (node.commit == 'yellow'){
+            ctx.fillStyle = "rgba(255, 255, 0, 0.99)";
+          }
+          if (node.commit == 'cyan'){
+            ctx.fillStyle = "rgba(0, 255, 255, 0.99)";
+          }
+          if (node.commit == 'magenta'){
+            ctx.fillStyle = "rgba(255, 0, 255, 0.99)";
+          }
+          fillCir(ctx, node.x, node.y, r);
+        }
+      }
+// show messages on the links
+      for(i=0;i<Nodes.length;i++){
+        node = Nodes[i];
+        for(j=0;j<node.out.length;j++){
+          m = node.out[j];
+          pi = m[0]; tx = m[1]; t = m[2];
+          tt = tx[0]; col = tx[1];
+          d = nodeDist(i, pi);
+          peer = Nodes[pi];
+          mx = node.x + (peer.x - node.x)*t/d;
+          my = node.y + (peer.y - node.y)*t/d;
+          if (tt == 'tx'){
+            if (col == 'red'){
+              ctx.fillStyle = "rgba(200, 0, 0, 0.2)";
+            }
+            if (col == 'blue'){
+              ctx.fillStyle = "rgba(0, 0, 200, 0.2)";
+            }
+            if (col == 'green'){
+              ctx.fillStyle = "rgba(0, 200, 0, 0.2)";
+            }
+            if (col == 'yellow'){
+              ctx.fillStyle = "rgba(200, 200, 0, 0.2)";
+            }
+            if (col == 'cyan'){
+              ctx.fillStyle = "rgba(0, 200, 200, 0.2)";
+            }
+            if (col == 'magenta'){
+              ctx.fillStyle = "rgba(200, 0, 200, 0.2)";
+            }
+          }
+          if (tt == 'sup'){
+            if (col == 'red'){
+              ctx.fillStyle = "rgba(200, 0, 0, 0.8)";
+            }
+            if (col == 'blue'){
+              ctx.fillStyle = "rgba(0, 0, 200, 0.8)";
+            }
+            if (col == 'green'){
+              ctx.fillStyle = "rgba(0, 200, 0, 0.8)";
+            }
+            if (col == 'yellow'){
+              ctx.fillStyle = "rgba(200, 200, 0, 0.8)";
+            }
+            if (col == 'cyan'){
+              ctx.fillStyle = "rgba(0, 200, 200, 0.8)";
+            }
+            if (col == 'magenta'){
+              ctx.fillStyle = "rgba(200, 0, 200, 0.8)";
+            }
+          }
+          fillCir(ctx, mx, my, 5);
+        }
+      }
+      getEl('simTicks').innerHTML = "milliSec:"+SimTicks;
+      getEl('simMess').innerHTML = "Messages:"+SimMess;
+    }
+
+    function nodeDist(a, b){
+      var na, nb, dx, dy, d;
+      na = Nodes[a]; nb = Nodes[b];
+      dx = na.x - nb.x;
+      dy = na.y - nb.y;
+      d = Math.sqrt(dx*dx + dy*dy);
+      return d;
+    }
+
+    // called when the canvas is clicked, adds a color to a node
+    function addTrans(e){
+      var canvas, ctx, p, d, sd, si, i, node, dx, dy, r;
+      r = 5;
+      canvas = document.getElementById("canvas");
+      if (! canvas.getContext) {
+        return;
+      }
+      ctx = canvas.getContext("2d");
+      p = canvas.mousePos(e);
+      sd = 99999999.9;
+      si = 0;
+      for(i=0;i<Nodes.length;i++){
+        node = Nodes[i];
+        dx = p.x - node.x;
+        dy = p.y - node.y;
+        d = Math.sqrt(dx*dx + dy*dy);
+        if (d < 20){
+          if (d < sd){
+            si = i+1; sd = d;
+          }
+        }
+      }
+// si = node index + 1, Tt is the tx color, ie 'red'
+      if (si > 0){
+        nodeAddTrans(si-1, ['tx', Tt]); // node[].in[0] = tx
+        simNode(si-1)
+        draw();
+      }
+    }
+
+    function simNet(){
+      var i;
+      SimTicks += 1;
+      for(i=0;i<Nodes.length;i++){
+        simNode(i);
+      }
+// simulate messages moving on canvas
+      for(i=0;i<Nodes.length;i++){
+        simLinks(i);
+      }
+    }
+
+    function simNode(i){
+      var node, inx, tx, col, pi, ii, sc, bsc, bcol, bsc2, bcol2, oux, pc, round;
+      node = Nodes[i];
+      // if (node.commit != ''){ return; }
+      while(node.in.length > 0){
+        inx = node.in.shift(); // [type, color, peerIndex] // types: tx, response (for queries)
+        tx = inx[0]; col = inx[1]; pi = inx[2]; // 'tx', color; pi means peer index
+        if (tx == 'tx'){
+          // if this tx is from a peer, respond to their query
+          if (pi != undefined){
+            // send back a response to the query, support this color if not already supporting a color
+            nodeSendOut(i, ['response', node.support || col, i], [pi]); // broadcast the transaction to output peers
+          }
+          // if we haven't seen this tx, start a query
+          if (node.support == ''){
+            node.support = col;  // support this trans if we do not support anything yet
+            inx[2] = i; // set the from field of the message to our id
+            nodeSendOut(i, inx); // broadcast the transaction to output peers
+          }
+        } else if (tx == 'response') {
+          // this is a response to our query
+          node.responses.push({index: pi, color: col})
+          // if all responses collected for round
+          if (node.responses.length % L === 0) {
+            // get the color with the most peers accepting it
+            var colors = {} // <color>: <count>
+            for (let i = 0; i < L; i++) {
+              // only get colors out of this round, responses has all rounds
+              let color = node.responses[node.responses.length - L + i].color
+              colors[color] = colors[color] || 0
+              colors[color]++
+            }
+            // check if color changed
+            let maxColor
+            let maxCount
+            for (let color in colors) {
+              if (!maxColor || colors[color] > maxCount) {
+                maxColor = color
+                maxCount = colors[color]
+              }
+            }
+            node.support = maxColor
+            // if final round not started, run another query
+            if (node.responses.length / L < R) {
+              inx[0] = 'tx'; // set to tx for query
+              inx[2] = i; // set the from field of the message to our id
+              nodeSendOut(i, inx); // broadcast the transaction to random peers
+            } else if (node.responses.length === L * R){
+              // every response is collected
+              node.commit = 1
+            }
+          }
+        }
+      }
+    }
+
+    function simNodeOff(i){
+// doesn't do anything
+    }
+
+    // get L random nodes that are not the node making the request
+    function getRandomNodeIndexes (ignoreNodeIndexes) {
+      ignoreNodeIndexes = ignoreNodeIndexes || []
+      nodesToQuery = L;
+      let randomNodeIndexes = []
+      let count = 0 // sanity check
+      while (randomNodeIndexes.length < nodesToQuery) {
+        let randomIndex = rand(0, Nodes.length);
+        if (ignoreNodeIndexes.indexOf(randomIndex) !== -1) continue;
+        if (randomNodeIndexes.indexOf(randomIndex) !== -1) continue;
+        randomNodeIndexes.push(randomIndex);
+        count++
+        if (count > nodesToQuery * 20) {
+          alert('Random nodes not found in ' + count + ' attempts, aborting');
+          break
+        }
+      }
+      return randomNodeIndexes
+    }
+
+    function nodeSendOut(ni, message, links){
+      var i, pi;
+      if (!links) {
+        // send query to random nodes
+        links = getRandomNodeIndexes([ni]);
+      }
+      for(i=0;i<links.length;i++){
+        var a = [];
+        var messageClone = []; // message clone
+        pi = links[i]; // peer index
+        messageClone = Object.clone(message);
+        a = [pi, messageClone, 0]; // node_id, message, time/distance
+        Nodes[ni].out.push(a); // ni = node index
+        SimMess += 1;
+      }
+    }
+
+// simulates messages sending on canvas, puts .out to .in once node reached
+    function simLinks(ni){
+      var out, i, d, rm, peerindex;
+      out = Nodes[ni].out; // [node_id, message, time/distance]
+      for(i=0;i<out.length;i++){
+        Nodes[ni].out[i][2] += 1; // increment time/distance
+        peerindex = Nodes[ni].out[i][0];
+        d = nodeDist(ni, peerindex);
+        if (Nodes[ni].out[i][2] > d){
+          rm = Nodes[ni].out[i];
+          Nodes[peerindex].in.push(rm[1]);
+          Nodes[ni].out.splice(i, 1);
+          i -= 1;
+        }
+      }
+    }
+// check if simulation is already running before starting with sim2
+    function sim(){
+      if (SimOn == 1){
+        getEl('simBtn').value = 'Sim';
+        SimOn = 0;
+      }
+      else{
+        if (N < 2){ return; }
+        getEl('simBtn').value = 'Sim+';
+        SimOn = 1;
+        sim2();
+      }
+    }
+// start running the simulation
+    function sim2(){
+      var i, s, n, j;
+      s = getEl('S');
+      n = s.options[s.selectedIndex].value;
+      i = 0;
+      if (SimI > 0){
+        i = SimI; SimI = 0;
+      }
+      j = 0;
+/*
+common values
+SimI: 0, n: 1, i: 0, j: 0
+fn nodesCommited checks that all good nodes are committed
+*/
+      for(;i<n;i++,j++){
+        simNet(); // runs simNode and simLinks on each node
+// decide if we should stop the simulation
+        if (nodesCommited() == 1){
+          sim();
+          break;
+        }
+        if (j>100){
+          console.log('j > 100: ' + j)
+          SimI = j;
+          break;
+        }
+      }
+      if (SimI == 0){
+        draw();
+      }
+      if (SimOn){
+        setTimeout('sim2()', 50);
+      }
+    }
+
+    function nodesCommited(){
+      var i, node;
+      for(i=0;i<Nodes.length;i++){
+        node = Nodes[i];
+        if ((node.commit == '') && (node.bad == '')){ return 0; }
+      }
+      return 1;
+    }
+
+    function clearSupport(){
+      var i, node;
+      for(i=0;i<Nodes.length;i++){
+        node = Nodes[i];
+        node.in = [];
+        node.out = [];
+        node.seen = {};
+        node.psup = {}; // peer support
+        node.support = '';
+        node.commit = '';
+        node.supch = 0; // support change
+        node.mysupch = 0; // my support change
+        node.bad = ''; // mark if the node is bad or not
+      }
+      SimTicks = 0;
+      SimMess = 0;
+      draw();
+    }
+
+    function setTx(c){
+      var i;
+      Tt = c;
+      getEl('redBtn').value = ' ';
+      getEl('blueBtn').value = ' ';
+      getEl('greenBtn').value = ' ';
+      getEl('yellowBtn').value = ' ';
+      getEl('cyanBtn').value = ' ';
+      getEl('magentaBtn').value = ' ';
+      if ((c != 'info') && (c != 'bad')){
+        i = '' + c + 'Btn';
+        getEl(i).value = '+';
+      }
+    }
+
+
+  </script>
+ </head>
+ <body onload="init();">
+   <div>
+This simulation demonstrates that a network of peer-to-peer nodes can quickly converge to one of several
+conflicting transactions without requiring a leader.
+     <ol>
+<li>Click the [Draw] button.
+<li>Click on any color and then click on any node. Add any other color to any other node. These represent conflicting transactions.
+<li>Click the [Sim] button. Increase the [Speed] to make it go faster.
+<li>Wait to see if all the nodes converge to the same color (transaction). The time stops ticking after all nodes commit.
+<li>When the time stops all nodes should be the same color. Try more experiments. You can inject a transaction while the network is running.
+<li>For details of how it works see the <a href='specs.htm' target=_blank>specs</a>.
+     </ol>
+   </div>
+   <form>
+     Number of nodes: <input type=text id=N size=5 value='20'>
+     Number to query: <input type=text id=L size=5 value='5'>
+     Number of rounds: <input type=text id=R size=5 value='6'>
+     <input type=button value="Draw" onclick="javascript:clearSupport(); makeNet(); draw()">
+<br>
+     Speed:
+     <select id=S>
+       <option>1
+       <option>2
+       <option>3
+       <option>5
+       <option>8
+       <option selected="selected">12
+       <option>18
+       <option>27
+       <option>41
+       <option>62
+       <option>93
+       <option>140
+       <option>210
+       <option>315
+       <option value=100000>end
+     </select>
+     <input type=button value="Sim" onclick="javascript:sim()" id='simBtn'>
+     <input type=button value="Clr" onclick="javascript:clearSupport()" >
+     <span id='simTicks'></span>
+     <span id='simMess'></span>
+<br>
+     <input type=button value="+" style="color:black;background-color:red" onclick="javascript:setTx('red')" id='redBtn'>
+     <input type=button value=" " style="color:yellow;background-color:green" onclick="javascript:setTx('green')" id='greenBtn'>
+     <input type=button value=" " style="color:white;background-color:blue" onclick="javascript:setTx('blue')" id='blueBtn'>
+     <input type=button value=" " style="color:black;background-color:yellow" onclick="javascript:setTx('yellow')" id='yellowBtn'>
+     <input type=button value=" " style="color:black;background-color:cyan" onclick="javascript:setTx('cyan')" id='cyanBtn'>
+     <input type=button value=" " style="color:white;background-color:magenta" onclick="javascript:setTx('magenta')" id='magentaBtn'>
+   </form>
+   <canvas id="canvas" width="800" height="800" ></canvas>
+ </body>
+</html>

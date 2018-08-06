@@ -1,3 +1,8 @@
+/*
+launch with node server <port>
+
+*/
+
 const express = require('express')
 const _ = require('lodash')
 const morgan = require('morgan')
@@ -6,28 +11,16 @@ const promisify = require('es6-promisify')
 const request = promisify(require('request'))
 const stringify = require('json-stable-stringify')
 const net = require('net')
-const fs = require('fs')
-const path = require('path')
+const config = require('./config')
 const log = require('./log')
-let config
-if (process.pkg) {
-  config = JSON.parse(fs.readFileSync(path.join(path.dirname(process.execPath), './server-config.json'), { encoding: 'utf8' }))
-} else {
-  config = JSON.parse(fs.readFileSync(path.resolve(__dirname, './server-config.json'), { encoding: 'utf8' }))
-}
+const X_WAIT = 3000
+const NUM_NODES_TO_QUERY = 3 // referred to as 'k' in whitepaper
+
 let timeout = 800 // request timeout
 let myHost
-let myNodeId
 let myNode
 let seedNode
 let nodes
-let resolveLaunching
-let isLaunching = new Promise((resolve) => {
-  resolveLaunching = resolve
-})
-
-const X_WAIT = 3000
-
 let myIp
 let myPort
 
@@ -47,6 +40,11 @@ if (process.argv[3]) {
 
 log.debug(`myIp: ${myIp}, myPort: ${myPort}`)
 
+let resolveLaunching
+let isLaunching = new Promise((resolve) => {
+  resolveLaunching = resolve
+})
+
 // pass in <node> object or host string
 function isNodeMe (node) {
   let nodeHost
@@ -62,52 +60,50 @@ function isNodeMe (node) {
   return false
 }
 
+function getNodeFromString (str) {
+  let colonIndex = str.indexOf(':')
+  let ip = str.slice(0, colonIndex)
+  let port = Number(str.slice(colonIndex + 1))
+  return {
+    ip: ip,
+    port: port
+  }
+}
+
 function isNodeValid (node) {
   try {
     if (_.isString(node)) {
-      let colonIndex = node.indexOf(':')
-      let ip = node.slice(0, colonIndex)
-      let port = Number(node.slice(colonIndex + 1))
-      node = {
-        id: port,
-        ip: ip,
-        port: port
-      }
+      node = getNodeFromString(node)
     }
     if (!net.isIP(node.ip)) throw new Error('node.ip is not valid: ' + stringify(node))
     if (!Number.isInteger(node.port)) throw new Error('node.port is not an integer: ' + stringify(node))
     node.port = parseInt(node.port)
-    return true
+    return node
   } catch (e) {
     log.error(e.stack)
   }
 }
 
-/*
-<node>
-Type: <object>
-Description: An object representing a node’s <nodeId>, <hostname>, and port number.
-Ex. { “id”: “<nodeId>”,  “ip”: “<hostname>”, “port”: <integer> }
-[{ <node> }, { <node> }, ...]
-*/
 function addNodeToList (node) {
-  if (!isNodeValid(node)) return
+  node = isNodeValid(node)
+  if (!node) return
   if (nodeAlreadyAdded(node)) return
-  log.debug('adding to node list: ' + stringify(node))
+  log.debug(`adding to node list: ${stringify(node)}`)
   nodes.push(node)
+  nodes = _.sortBy(nodes, 'port');
+  log.debug(`nodes: ${stringify(nodes)}`)
   return true
 }
 
 function nodeAlreadyAdded (node) {
-  if (nodes.some((currNode) => {
-    return (currNode.id === node.id) ||
-           (currNode.ip === node.ip && currNode.port === node.port)
-  })) return true
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodes[i].ip === node.ip && nodes[i].port === node.port) return true
+  }
 }
 
 function getNodeHost (node) {
-  if (_.isString(node)) return node
-  if (!isNodeValid(node)) return node
+  node = isNodeValid(node)
+  if (!node) return
   return node.ip + ':' + node.port
 }
 
@@ -122,16 +118,12 @@ async function checkNodeList (node) {
     // The node queries for a list of known nodes on the /nodes route and adds them to its node list.
     let nodelistResponse = await request({timeout: timeout, url: 'http://' + getNodeHost(node) + '/nodes'})
     let responseNodes = JSON.parse(nodelistResponse.body).nodes
-    if (!responseNodes) {
-      resolveLaunching()
-      return
-    }
+    if (!responseNodes) return
     for (let i = 0; i < responseNodes.length; i++) {
       let node = responseNodes[i]
       if (isNodeMe(node)) continue
       if (addNodeToList(node)) {
         try {
-          log.debug('here')
           joinNode(node) // try to join each node we add to our nodes list
         } catch (e) {
           log.error('join node error: ' + e.message)
@@ -147,24 +139,37 @@ async function checkNodeList (node) {
   }
 }
 
+async function getRandomNodes (num) {
+  try {
+    num = num || NUM_NODES_TO_QUERY
+    if (nodes.length < num) {
+      log.error('not enough nodes to query, nodes.length: ' + nodes.length + ', num to query: ' + num)
+      return
+    }
+    let randomNodes = []
+    while (randomNodes.length < num) {
+      let rand = Math.floor(Math.random() * (num))
+      if (randomNodes.indexOf(rand) === -1) randomNodes.push(rand)
+    }
+    return randomNodes
+  } catch (err) {
+    console.error(err.message)
+  }
+}
+
 async function init () {
   app.listen(myPort, () => {
     log.info('listening on port ' + myPort)
   })
   myHost = myIp + ':' + myPort
-  myNodeId = myPort // keep it simple
-  myNode = {id: myNodeId, ip: myIp, port: myPort}
+  myNode = {ip: myIp, port: myPort}
   seedNode = config.seedNode
   nodes = []
-  if (!isNodeValid(myNode)) {
-    process.exit()
-  }
+  if (!isNodeValid(myNode)) process.exit()
   addNodeToList(myNode)
-  if (!isNodeMe(seedNode)) {
-    log.debug('Seed node is not me: ' + seedNode)
-    await checkNodeList(seedNode)
-  }
+  if (!isNodeMe(seedNode)) await checkNodeList(seedNode)
   resolveLaunching()
+  log.debug('initialized')
 }
 
 init()
@@ -213,7 +218,6 @@ async function joinNode (node) {
     addNodeToList(node)
     let payLoad = {
       node: {
-        id: myNodeId,
         ip: myIp,
         port: myPort
       }

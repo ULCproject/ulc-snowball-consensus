@@ -102,5 +102,7 @@ current color bec
 ```
 ## Other References
 [coindesk article](https://www.coindesk.com/emin-gun-sirer-unveils-simple-yet-powerful-consensus-protocol/)
+
 [mashable article](https://mashable.com/2018/07/25/best-blockchain-race/#JwCJ1mzAKmqy)
+
 [whitepaper](https://ipfs.io/ipfs/QmUy4jh5mGNZvLkjies1RWM4YuvJh5o2FYopNPVYwrRVGV)
