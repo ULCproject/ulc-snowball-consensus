@@ -13,10 +13,21 @@ Upon every successful query, the node increments its confidence counter for that
 A node switches colors when the confidence in its current color becomes lower than the confidence value of the new color.
 It then goes back to the query step, and initiates a subsequent round of query, for a total of m rounds.
 Finally, the node decides the color it ended up with at time m.
+
+scenario to avoid:
+3 nodes, querying 2 nodes per round, each starting with a different color
+node 0 with green sends a query to node 1 (red) and node 2 (blue)
+it receives back responses for 1 red and 1 blue
+it switches to one of these and starts the next round.
+The other two did the same thing and switched colors.
+They will come to agreement based on random switching.
 -->
 
   <script type="application/javascript">
-
+    var debug = function () {};
+    if (false) {
+      debug = console.log;
+    }
     Object.clone = function(thisobj) {
       var i;
       var newObj = (thisobj instanceof Array) ? [] : {};
@@ -72,20 +83,22 @@ Finally, the node decides the color it ended up with at time m.
     }
 
     function init(){
-      H = 600; W = 600;
+      H = 390; W = 600;
       var canvas = document.getElementById("canvas");
       canvas.onclick = addTrans;
     }
 
     function nodeAddTrans(i, tt){
+      if (!L) {
+        L = getEl('L').value; // number to query
+        R = getEl('R').value; // number of rounds
+      }
       Nodes[i].in[0] = tt;
     }
 
     function makeNet(){
       var i, l, tries, found, j, x;
       N = getEl('N').value;
-      L = getEl('L').value;
-      R = getEl('R').value;
       CrossTime = Math.sqrt(W*W + H*H);
 // make the nodes
       Nodes = [];
@@ -94,16 +107,12 @@ Finally, the node decides the color it ended up with at time m.
 // initilize the node data
         node.x = rand(10, W-10);
         node.y = rand(10, H-10);
+        node.seen = false; // mark if node has seen a tx after simulation starts/restarts
         node.responses = []; // {<peerIndex>: <color>}
-        node.counter = {}; // {<color>: <number>}
         node.in = []; // queue of messages coming in
         node.out = []; // queue of messages going out
-        node.seen = {};  // keep track of trans we have seen
-        node.psup = {};  // keep track of trans our peers are supporting
         node.support = '';  // keep track of trans we are supporting
         node.commit = '';  // keep track of trans we commit to
-        node.supch = 0; // keep track of how long it has been since any peer changed support
-        node.mysupch = 0; // keep track of how long it has been since we changed support
         node.bad = ''; // mark if the node is bad or not
         Nodes[i] = node;
       }
@@ -212,6 +221,9 @@ Finally, the node decides the color it ended up with at time m.
           m = node.out[j];
           pi = m[0]; tx = m[1]; t = m[2];
           tt = tx[0]; col = tx[1];
+          // if (col !== node.support) {
+          //   debug('tt: ' + tt + ', col: ' + col + ', support: ' + node.support + ', node: ' + i);
+          // }
           d = nodeDist(i, pi);
           peer = Nodes[pi];
           mx = node.x + (peer.x - node.x)*t/d;
@@ -236,7 +248,7 @@ Finally, the node decides the color it ended up with at time m.
               ctx.fillStyle = "rgba(200, 0, 200, 0.2)";
             }
           }
-          if (tt == 'sup'){
+          if (tt == 'response'){
             if (col == 'red'){
               ctx.fillStyle = "rgba(200, 0, 0, 0.8)";
             }
@@ -323,45 +335,61 @@ Finally, the node decides the color it ended up with at time m.
         inx = node.in.shift(); // [type, color, peerIndex] // types: tx, response (for queries)
         tx = inx[0]; col = inx[1]; pi = inx[2]; // 'tx', color; pi means peer index
         if (tx == 'tx'){
+          // if simulation is off, force the color change for addTrans
+          if (SimOn === 0) {
+            node.support = col;
+          } else {
+            node.support = node.support || col;  // support this trans if we do not support anything yet
+          }
           // if this tx is from a peer, respond to their query
           if (pi != undefined){
+            debug('node ' + i + ' received ' + col + ' from ' + pi + ', sending response for ' + col + ', support: ' + node.support);
             // send back a response to the query, support this color if not already supporting a color
-            nodeSendOut(i, ['response', node.support || col, i], [pi]); // broadcast the transaction to output peers
+            nodeSendOut(i, ['response', node.support, i], [pi]); // broadcast the transaction to output peers
           }
+
           // if we haven't seen this tx, start a query
-          if (node.support == ''){
-            node.support = col;  // support this trans if we do not support anything yet
-            inx[2] = i; // set the from field of the message to our id
-            nodeSendOut(i, inx); // broadcast the transaction to output peers
+          if (node.seen == false){
+            node.seen = true;
+            debug('node ' + i + ' seen was false for ' + col + ' support: ' + node.support);
+            nodeSendOut(i, ['tx', node.support, i]); // broadcast the transaction to output peers
           }
         } else if (tx == 'response') {
+          debug('node ' + i + ' received response from ' + pi + ' for ' + col + ', supports: ' + node.support);
           // this is a response to our query
           node.responses.push({index: pi, color: col})
           // if all responses collected for round
           if (node.responses.length % L === 0) {
             // get the color with the most peers accepting it
             var colors = {} // <color>: <count>
-            for (let i = 0; i < L; i++) {
+            for (let k = 0; k < L; k++) {
               // only get colors out of this round, responses has all rounds
-              let color = node.responses[node.responses.length - L + i].color
+              let color = node.responses[node.responses.length - L + k].color
               colors[color] = colors[color] || 0
               colors[color]++
+              debug('node ' + i + ' tallying color for response[' + (node.responses.length - L + k) + ']: ' + JSON.stringify(node.responses[node.responses.length - L + k]) + ', colors: ' + JSON.stringify(colors))
+            }
+            // don't let support color be undefined
+            if (!colors[node.support]) {
+              colors[node.support] = 0;
             }
             // check if color changed
             let maxColor
-            let maxCount
+            let maxCount = 0;
             for (let color in colors) {
               if (!maxColor || colors[color] > maxCount) {
                 maxColor = color
                 maxCount = colors[color]
               }
             }
-            node.support = maxColor
+            debug('checking color counts: ' + JSON.stringify(colors) + ', maxCount: ' + maxCount + ', colors[node.support]: ' + colors[node.support] + ', maxColor: ' + maxColor + ', support: ' + node.support)
+            if (maxCount > colors[node.support]) {
+              debug('node ' + i + ' SWITCHED to ' + maxColor);
+              node.support = maxColor
+            }
             // if final round not started, run another query
             if (node.responses.length / L < R) {
-              inx[0] = 'tx'; // set to tx for query
-              inx[2] = i; // set the from field of the message to our id
-              nodeSendOut(i, inx); // broadcast the transaction to random peers
+              nodeSendOut(i, ['tx', node.support, i]); // broadcast the transaction to random peers
             } else if (node.responses.length === L * R){
               // every response is collected
               node.commit = 1
@@ -379,6 +407,7 @@ Finally, the node decides the color it ended up with at time m.
     function getRandomNodeIndexes (ignoreNodeIndexes) {
       ignoreNodeIndexes = ignoreNodeIndexes || []
       nodesToQuery = L;
+      debug('nodesToQuery: ' + nodesToQuery);
       let randomNodeIndexes = []
       let count = 0 // sanity check
       while (randomNodeIndexes.length < nodesToQuery) {
@@ -401,11 +430,15 @@ Finally, the node decides the color it ended up with at time m.
         // send query to random nodes
         links = getRandomNodeIndexes([ni]);
       }
+      debug('nodeSendOut from ni: ' + ni + ', message: ' + JSON.stringify(message) + ' to links: ' + JSON.stringify(links));
       for(i=0;i<links.length;i++){
         var a = [];
         var messageClone = []; // message clone
+        for (let j = 0; j < message.length; j++) {
+          messageClone.push(message[j]);
+        }
         pi = links[i]; // peer index
-        messageClone = Object.clone(message);
+        // messageClone = Object.clone(message);
         a = [pi, messageClone, 0]; // node_id, message, time/distance
         Nodes[ni].out.push(a); // ni = node index
         SimMess += 1;
@@ -460,11 +493,12 @@ fn nodesCommited checks that all good nodes are committed
         simNet(); // runs simNode and simLinks on each node
 // decide if we should stop the simulation
         if (nodesCommited() == 1){
+          clearResponses();
           sim();
           break;
         }
         if (j>100){
-          console.log('j > 100: ' + j)
+          debug('j > 100: ' + j)
           SimI = j;
           break;
         }
@@ -486,18 +520,44 @@ fn nodesCommited checks that all good nodes are committed
       return 1;
     }
 
+    function clearResponses(){
+      var i, node;
+      L = 0;
+      for(i=0;i<Nodes.length;i++){
+        node = Nodes[i];
+        node.responses = []; // {<peerIndex>: <color>}
+        if (node.in.length) {
+          debug('node ' + i + ' in should be empty');
+          debug(node.in);
+        }
+        if (node.out.length) {
+          debug('node ' + i + ' out should be empty');
+          debug(node.out);
+        }
+        if (!node.commit) {
+          debug('node ' + i + ' should be committed');
+          debug(node.commit)
+        }
+        node.seen = false;
+        node.commit = '';
+        node.bad = ''; // mark if the node is bad or not
+      }
+    }
+
     function clearSupport(){
+      if (SimOn === 1) {
+        sim();
+      }
+      L = 0;
       var i, node;
       for(i=0;i<Nodes.length;i++){
         node = Nodes[i];
+        node.seen = false
+        node.responses = []; // {<peerIndex>: <color>}
         node.in = [];
         node.out = [];
-        node.seen = {};
-        node.psup = {}; // peer support
         node.support = '';
         node.commit = '';
-        node.supch = 0; // support change
-        node.mysupch = 0; // my support change
         node.bad = ''; // mark if the node is bad or not
       }
       SimTicks = 0;
@@ -537,9 +597,9 @@ conflicting transactions without requiring a leader.
      </ol>
    </div>
    <form>
-     Number of nodes: <input type=text id=N size=5 value='20'>
-     Number to query: <input type=text id=L size=5 value='5'>
-     Number of rounds: <input type=text id=R size=5 value='6'>
+     Number of nodes: <input type=text id=N size=5 value='5'>
+     Number to query: <input type=text id=L size=5 value='3'>
+     Number of rounds: <input type=text id=R size=5 value='3'>
      <input type=button value="Draw" onclick="javascript:clearSupport(); makeNet(); draw()">
 <br>
      Speed:
@@ -548,8 +608,8 @@ conflicting transactions without requiring a leader.
        <option>2
        <option>3
        <option>5
-       <option>8
-       <option selected="selected">12
+       <option selected="selected">8
+       <option>12
        <option>18
        <option>27
        <option>41
@@ -572,6 +632,6 @@ conflicting transactions without requiring a leader.
      <input type=button value=" " style="color:black;background-color:cyan" onclick="javascript:setTx('cyan')" id='cyanBtn'>
      <input type=button value=" " style="color:white;background-color:magenta" onclick="javascript:setTx('magenta')" id='magentaBtn'>
    </form>
-   <canvas id="canvas" width="800" height="800" ></canvas>
+   <canvas id="canvas" width="800" height="400" ></canvas>
  </body>
 </html>
