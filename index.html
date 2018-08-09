@@ -14,7 +14,7 @@ A node switches colors when the confidence in its current color becomes lower th
 It then goes back to the query step, and initiates a subsequent round of query, for a total of m rounds.
 Finally, the node decides the color it ended up with at time m.
 
-scenario to avoid:
+Also I found this scenario to avoid:
 3 nodes, querying 2 nodes per round, each starting with a different color
 node 0 with green sends a query to node 1 (red) and node 2 (blue)
 it receives back responses for 1 red and 1 blue
@@ -63,7 +63,8 @@ They will come to agreement based on random switching.
     var W = 0;
     var N = 0;
     var L = 0; // number of nodes to query on transaction received, 'n' in the whitepaper
-    var R = 0; // number of rounds, 'm' in the whitepaper
+    var A = 0; // alpha, fraction of responses needed to support color
+    var B = 0; // beta, minimum count to accept color
     var CrossTime = 0;
     var S;
     var Tt = 'red';
@@ -89,9 +90,15 @@ They will come to agreement based on random switching.
     }
 
     function nodeAddTrans(i, tt){
-      if (!L) {
+      if (!L || !A) {
         L = getEl('L').value; // number to query
-        R = getEl('R').value; // number of rounds
+        A = getEl('A').value; // alpha
+        if (A < .5 || A > 1) {
+          alert('Alpha must be between .5 and 1');
+          A = 0;
+          return;
+        }
+        B = getEl('B').value; // beta
       }
       Nodes[i].in[0] = tt;
     }
@@ -107,13 +114,14 @@ They will come to agreement based on random switching.
 // initilize the node data
         node.x = rand(10, W-10);
         node.y = rand(10, H-10);
+        node.colors = {};
+        node.count = 0;
         node.seen = false; // mark if node has seen a tx after simulation starts/restarts
         node.responses = []; // {<peerIndex>: <color>}
         node.in = []; // queue of messages coming in
         node.out = []; // queue of messages going out
         node.support = '';  // keep track of trans we are supporting
         node.commit = '';  // keep track of trans we commit to
-        node.bad = ''; // mark if the node is bad or not
         Nodes[i] = node;
       }
     }
@@ -154,16 +162,6 @@ They will come to agreement based on random switching.
         strokeCir(ctx, node.x, node.y, r);
       }
       ctx.strokeStyle = "rgb(0,0,0)";
-// mark the bad nodes
-      for(i=0;i<Nodes.length;i++){
-        node = Nodes[i];
-        if (node.bad == ''){ continue; }
-        if (node.bad == 'off'){ ctx.strokeStyle = "rgb(0,0,250)"; }
-        if (node.bad == 'stuck'){ ctx.strokeStyle = "rgb(0,250,0)"; }
-        if (node.bad == 'toggle'){ ctx.strokeStyle = "rgb(250,0,0)"; }
-        strokeCir(ctx, node.x, node.y, r+1);
-        strokeCir(ctx, node.x, node.y, r+2);
-      }
 // show which transaction the nodes are supporting
       for(i=0;i<Nodes.length;i++){
         node = Nodes[i];
@@ -222,7 +220,7 @@ They will come to agreement based on random switching.
           pi = m[0]; tx = m[1]; t = m[2];
           tt = tx[0]; col = tx[1];
           // if (col !== node.support) {
-          //   debug('tt: ' + tt + ', col: ' + col + ', support: ' + node.support + ', node: ' + i);
+          //   debug('link circle tt: ' + tt + ', col: ' + col + ', support: ' + node.support + ', node: ' + i);
           // }
           d = nodeDist(i, pi);
           peer = Nodes[pi];
@@ -336,14 +334,19 @@ They will come to agreement based on random switching.
         tx = inx[0]; col = inx[1]; pi = inx[2]; // 'tx', color; pi means peer index
         if (tx == 'tx'){
           // if simulation is off, force the color change for addTrans
+          // this let's us change the color after a simulation without clearing the colors first
           if (SimOn === 0) {
+            debug('SimOn === 0, node ' + i + ' changed support to ' + col + ' from ' + node.support)
             node.support = col;
           } else {
-            node.support = node.support || col;  // support this trans if we do not support anything yet
+            if (!node.support) {
+              debug('node ' + i + ' supports nothing, updating to ' + col);
+            }
+            node.support = node.support || col;  // only support this trans if we do not support anything yet
           }
           // if this tx is from a peer, respond to their query
           if (pi != undefined){
-            debug('node ' + i + ' received ' + col + ' from ' + pi + ', sending response for ' + col + ', support: ' + node.support);
+            // debug('node ' + i + ' received ' + col + ' from ' + pi + ', sending response for ' + col + ', support: ' + node.support);
             // send back a response to the query, support this color if not already supporting a color
             nodeSendOut(i, ['response', node.support, i], [pi]); // broadcast the transaction to output peers
           }
@@ -351,48 +354,56 @@ They will come to agreement based on random switching.
           // if we haven't seen this tx, start a query
           if (node.seen == false){
             node.seen = true;
-            debug('node ' + i + ' seen was false for ' + col + ' support: ' + node.support);
+            // debug('node ' + i + ' seen was false for ' + col + ' support: ' + node.support);
             nodeSendOut(i, ['tx', node.support, i]); // broadcast the transaction to output peers
           }
         } else if (tx == 'response') {
-          debug('node ' + i + ' received response from ' + pi + ' for ' + col + ', supports: ' + node.support);
+          // debug('node ' + i + ' received response from ' + pi + ' for ' + col + ', supports: ' + node.support);
           // this is a response to our query
           node.responses.push({index: pi, color: col})
           // if all responses collected for round
           if (node.responses.length % L === 0) {
             // get the color with the most peers accepting it
-            var colors = {} // <color>: <count>
+            var colors = {}; // track the count for this query set
+            node.colors = node.colors || {} // <color>: <count>
+            node.colors[node.support] = node.colors[node.support] || 0;
             for (let k = 0; k < L; k++) {
               // only get colors out of this round, responses has all rounds
+              // don't let support color be undefined
               let color = node.responses[node.responses.length - L + k].color
               colors[color] = colors[color] || 0
               colors[color]++
-              debug('node ' + i + ' tallying color for response[' + (node.responses.length - L + k) + ']: ' + JSON.stringify(node.responses[node.responses.length - L + k]) + ', colors: ' + JSON.stringify(colors))
+              // debug('node ' + i + ' tallying color for response[' + (node.responses.length - L + k) + ']: ' + JSON.stringify(node.responses[node.responses.length - L + k]) + ', colors: ' + JSON.stringify(colors))
             }
-            // don't let support color be undefined
-            if (!colors[node.support]) {
-              colors[node.support] = 0;
-            }
-            // check if color changed
-            let maxColor
-            let maxCount = 0;
-            for (let color in colors) {
-              if (!maxColor || colors[color] > maxCount) {
-                maxColor = color
-                maxCount = colors[color]
+            // check each color for more than the alpha fraction of results
+            let lastCol = node.support;
+            for (let col in colors) {
+              if (colors[col] >= A * L) { // A is alpha, L is number of queried nodes
+                // d[col`]++
+                node.colors[col] = node.colors[col] || 0;
+                node.colors[col]++;
+                // if d[col`] > d[col] then col = col`
+                if (node.colors[col] > node.colors[node.support]) {
+                  debug('node ' + i + ' support: ' + node.support + ' changing to : ' + col + ', because node.colors[col]: ' + node.colors[col] + ', > node.colors[node.support]: ' + node.colors[node.support] + ', lastCol: ' + lastCol + ', col: ' + col + ', colors[col]: ' + colors[col] + ', colors: ' + JSON.stringify(colors) + ', node.colors: ' + JSON.stringify(node.colors));
+                  node.support = col;
+                }
+                // if d[col`] !== lastCol then lastCol = col`, count = 0
+                if (col !== lastCol){
+                  node.count = 0;
+                  debug('node ' + i + ' count: ' + node.count + ' reset for support: ' + node.support + ' lastCol: ' + lastCol + ', col: ' + col + ', colors[col]: ' + colors[col]);
+                  lastCol = col;
+                } else {
+                // else if ++cnt > B then accept col
+                  node.count++;
+                  debug('node ' + i + ' incremented count to ' + node.count + ' for support: ' + node.support + ' lastCol: ' + lastCol + ', col: ' + col + ', colors: ' + JSON.stringify(colors));
+                  if (node.count > B) { // B is beta
+                    node.commit = node.support;
+                  }
+                }
               }
             }
-            debug('checking color counts: ' + JSON.stringify(colors) + ', maxCount: ' + maxCount + ', colors[node.support]: ' + colors[node.support] + ', maxColor: ' + maxColor + ', support: ' + node.support)
-            if (maxCount > colors[node.support]) {
-              debug('node ' + i + ' SWITCHED to ' + maxColor);
-              node.support = maxColor
-            }
-            // if final round not started, run another query
-            if (node.responses.length / L < R) {
+            if (!node.commit) {
               nodeSendOut(i, ['tx', node.support, i]); // broadcast the transaction to random peers
-            } else if (node.responses.length === L * R){
-              // every response is collected
-              node.commit = 1
             }
           }
         }
@@ -407,7 +418,7 @@ They will come to agreement based on random switching.
     function getRandomNodeIndexes (ignoreNodeIndexes) {
       ignoreNodeIndexes = ignoreNodeIndexes || []
       nodesToQuery = L;
-      debug('nodesToQuery: ' + nodesToQuery);
+      // debug('nodesToQuery: ' + nodesToQuery);
       let randomNodeIndexes = []
       let count = 0 // sanity check
       while (randomNodeIndexes.length < nodesToQuery) {
@@ -430,7 +441,7 @@ They will come to agreement based on random switching.
         // send query to random nodes
         links = getRandomNodeIndexes([ni]);
       }
-      debug('nodeSendOut from ni: ' + ni + ', message: ' + JSON.stringify(message) + ' to links: ' + JSON.stringify(links));
+      // debug('nodeSendOut from ni: ' + ni + ', message: ' + JSON.stringify(message) + ' to links: ' + JSON.stringify(links));
       for(i=0;i<links.length;i++){
         var a = [];
         var messageClone = []; // message clone
@@ -515,7 +526,7 @@ fn nodesCommited checks that all good nodes are committed
       var i, node;
       for(i=0;i<Nodes.length;i++){
         node = Nodes[i];
-        if ((node.commit == '') && (node.bad == '')){ return 0; }
+        if (node.commit == ''){ return 0; }
       }
       return 1;
     }
@@ -540,7 +551,8 @@ fn nodesCommited checks that all good nodes are committed
         }
         node.seen = false;
         node.commit = '';
-        node.bad = ''; // mark if the node is bad or not
+        node.colors = {};
+        node.count = 0;
       }
     }
 
@@ -558,7 +570,8 @@ fn nodesCommited checks that all good nodes are committed
         node.out = [];
         node.support = '';
         node.commit = '';
-        node.bad = ''; // mark if the node is bad or not
+        node.colors = {};
+        node.count = 0;
       }
       SimTicks = 0;
       SimMess = 0;
@@ -586,7 +599,8 @@ fn nodesCommited checks that all good nodes are committed
  <body onload="init();">
    <div>
 This simulation demonstrates that a network of peer-to-peer nodes can quickly converge to one of several
-conflicting transactions without requiring a leader.
+conflicting transactions without requiring a leader. Alpha is the fraction of nodes that must support a color.
+Beta is the confidence count needed to commit to a color
      <ol>
 <li>Click the [Draw] button.
 <li>Click on any color and then click on any node. Add any other color to any other node. These represent conflicting transactions.
@@ -597,9 +611,10 @@ conflicting transactions without requiring a leader.
      </ol>
    </div>
    <form>
-     Number of nodes: <input type=text id=N size=5 value='5'>
+     Number of nodes: <input type=text id=N size=5 value='8'>
      Number to query: <input type=text id=L size=5 value='3'>
-     Number of rounds: <input type=text id=R size=5 value='3'>
+     Alpha: <input type=text id=A size=5 value='.6'>
+     Beta: <input type=text id=B size=5 value='4'>
      <input type=button value="Draw" onclick="javascript:clearSupport(); makeNet(); draw()">
 <br>
      Speed:
@@ -608,9 +623,9 @@ conflicting transactions without requiring a leader.
        <option>2
        <option>3
        <option>5
-       <option selected="selected">8
+       <option>8
        <option>12
-       <option>18
+       <option selected="selected">18
        <option>27
        <option>41
        <option>62
